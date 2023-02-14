@@ -3,6 +3,7 @@
 This README would normally document whatever steps are necessary to get the app running.
 
 ### How to run the app? ###
+Please use java 17 for easy set up
 
 1 First unzip the app bundle
 
