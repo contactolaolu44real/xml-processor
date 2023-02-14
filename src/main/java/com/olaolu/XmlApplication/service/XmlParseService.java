@@ -37,6 +37,7 @@ import org.springframework.core.io.ResourceLoader;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -47,93 +48,99 @@ import org.xml.sax.SAXException;
 @RequiredArgsConstructor
 @Service
 public class XmlParseService {
-    private final XmlParseRepository xmlParseRepository;
-    public static final String SCHEMA_FILE = "validator.xsd";
-    private final ResourceLoader resourceLoader;
 
-    public void uploadFile(XmlRequest xmlRequest){
-       if (validateInputFile(xmlRequest)){
-           List<ParsedDetails> parsedDetails = mapXmlToModel(xmlRequest);
-           xmlParseRepository.saveAll(parsedDetails);
-        }else {
-         throw new BadRequestException("Supplied xml is not the format expected");
-       }
+  private final XmlParseRepository xmlParseRepository;
+  public static final String SCHEMA_FILE = "validator.xsd";
+  private final ResourceLoader resourceLoader;
+
+  public void uploadFile(XmlRequest xmlRequest) {
+    if (validateInputFile(xmlRequest)) {
+      List<ParsedDetails> parsedDetails = mapXmlToModel(xmlRequest);
+      xmlParseRepository.saveAll(parsedDetails);
+    } else {
+      throw new BadRequestException("Supplied xml is not the format expected");
     }
+  }
 
-    private boolean validateInputFile(XmlRequest input) {
-        SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
-        try {
-            Schema schema = schemaFactory.newSchema(new StreamSource(resourceLoader.getResource("classpath:" + SCHEMA_FILE).getInputStream()));
-            Validator validator = schema.newValidator();
-            File convFile = getFileFromRequest(input);
-            validator.validate(new StreamSource(convFile));
-            return true;
-        } catch (SAXException | IOException e) {
-            e.printStackTrace();
-            return false;
+  private boolean validateInputFile(XmlRequest input) {
+    SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
+    if (input.getFile().isEmpty() || !input.getFile().getContentType().equals("application/xml")){
+      throw new BadRequestException("Select a file and make sure it is xml");
+    }
+    try {
+      Schema schema = schemaFactory.newSchema(new StreamSource(resourceLoader.getResource("classpath:" + SCHEMA_FILE).getInputStream()));
+      Validator validator = schema.newValidator();
+      File convFile = getFileFromRequest(input);
+      validator.validate(new StreamSource(convFile));
+      return true;
+    } catch (SAXException | IOException e) {
+      e.printStackTrace();
+      return false;
+    }
+  }
+
+  private File getFileFromRequest(XmlRequest input) throws IOException {
+    File convFile = new File(Objects.requireNonNull(input.getFile().getOriginalFilename()));
+    FileOutputStream fos = new FileOutputStream(convFile);
+    fos.write(input.getFile().getBytes());
+    fos.close();
+    return convFile;
+  }
+
+  private List<ParsedDetails> mapXmlToModel(XmlRequest request) {
+    List<ParsedDetails> parsedDetailsList = new ArrayList<>();
+    try {
+      DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+      DocumentBuilder builder = factory.newDocumentBuilder();
+      Document document = builder.parse(new InputSource(new StringReader(new String(request.getFile().getBytes()))));
+      Element rootElement = document.getDocumentElement();
+      Map<Integer, Node> deviceInfosMap = new HashMap<>();
+      for (int i = 0; i < rootElement.getChildNodes().getLength(); i++) {
+        Node node = rootElement.getChildNodes().item(i);
+        if (node.getNodeName().equals("deviceInfo")) {
+          deviceInfosMap.put(i, node);
         }
-    }
-
-    private File getFileFromRequest(XmlRequest input) throws IOException {
-        File convFile = new File(Objects.requireNonNull(input.getFile().getOriginalFilename()));
-        FileOutputStream fos = new FileOutputStream( convFile );
-        fos.write( input.getFile().getBytes() );
-        fos.close();
-        return convFile;
-    }
-
-    private List<ParsedDetails> mapXmlToModel(XmlRequest request) {
-        List<ParsedDetails> parsedDetailsList = new ArrayList<>();
-        try {
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            DocumentBuilder builder = factory.newDocumentBuilder();
-            Document document = builder.parse(new InputSource(new StringReader(new String(request.getFile().getBytes()))));
-            Element rootElement = document.getDocumentElement();
-            Map<Integer, Node> deviceInfosMap = new HashMap<>();
-            for (int i = 0; i < rootElement.getChildNodes().getLength(); i++){
-                Node node = rootElement.getChildNodes().item(i);
-                if (node.getNodeName().equals("deviceInfo")){
-                    deviceInfosMap.put(i,node);
-                }
-            }
-            for (Entry<Integer, Node> entry: deviceInfosMap.entrySet()){
-                    ParsedDetails parsedDetails = new ParsedDetails();
-              for (int j = 0; j < entry.getValue().getChildNodes().getLength(); j++){
-                Node modelNode = entry.getValue().getChildNodes().item(j);
-                if (entry.getValue().getChildNodes().item(j).getNodeName().equals("screenInfo")){
-                        String width = modelNode.getAttributes().getNamedItem("width").getNodeValue();
-                        String height = modelNode.getAttributes().getNamedItem("height").getNodeValue();
-                        String dpi = modelNode.getAttributes().getNamedItem("dpi").getNodeValue();
-                      parsedDetails.setDpi(Long.parseLong(dpi));
-                      parsedDetails.setHeight(Long.parseLong(height));
-                      parsedDetails.setWidth(Long.parseLong(width));
-                    }
-                if (entry.getValue().getChildNodes().item(j).getNodeName().equals("appInfo")){
-                  String newspaperName =((DeferredElementImpl) modelNode).getElementsByTagName("newspaperName").item(0).getTextContent();
-                  parsedDetails.setNewspaperName(newspaperName);
-                  parsedDetails.setUploadTime(Instant.now());
-                  parsedDetails.setFileName(request.getFile().getName());
-                }
-                parsedDetailsList.add(parsedDetails);
-              }
+      }
+      for (Entry<Integer, Node> entry : deviceInfosMap.entrySet()) {
+        ParsedDetails parsedDetails = new ParsedDetails();
+        for (int j = 0; j < entry.getValue().getChildNodes().getLength(); j++) {
+          Node modelNode = entry.getValue().getChildNodes().item(j);
+          if (entry.getValue().getChildNodes().item(j).getNodeName().equals("screenInfo")) {
+            String width = modelNode.getAttributes().getNamedItem("width").getNodeValue();
+            String height = modelNode.getAttributes().getNamedItem("height").getNodeValue();
+            String dpi = modelNode.getAttributes().getNamedItem("dpi").getNodeValue();
+            parsedDetails.setDpi(Long.parseLong(dpi));
+            parsedDetails.setHeight(Long.parseLong(height));
+            parsedDetails.setWidth(Long.parseLong(width));
+          }
+          if (entry.getValue().getChildNodes().item(j).getNodeName().equals("appInfo")) {
+            String newspaperName = ((DeferredElementImpl) modelNode).getElementsByTagName("newspaperName").item(0).getTextContent();
+            parsedDetails.setNewspaperName(newspaperName);
+            parsedDetails.setUploadTime(Instant.now());
+            parsedDetails.setFileName(request.getFile().getName());
+          }
+          parsedDetailsList.add(parsedDetails);
         }
-        } catch (IOException | SAXException | ParserConfigurationException e) {
-            e.printStackTrace();
-        }
-      return parsedDetailsList;
+      }
+    } catch (IOException | SAXException | ParserConfigurationException e) {
+      e.printStackTrace();
     }
+    return parsedDetailsList;
+  }
 
-    public CustomPage<ParsedDetails> getUploadedModels(int pageSize, int pageNumber, String fileName, String newspaperName, SortOrder sortOrder, SortColumn sortColumn){
-      PageRequest pageRequest = PageRequest.of(pageNumber, pageSize, SortOrder.ASC==sortOrder? Sort.by(sortColumn.getColumn()).ascending():Sort.by(sortColumn.getColumn()).descending());
-      SearchParams searchParams = new SearchParams();
-      searchParams.setFileName(fileName);
-      searchParams.setNewspaperName(newspaperName);
-      Page<ParsedDetails> parsedXml = xmlParseRepository.findParsedXml(searchParams, pageRequest);
-      return getPaginatedParsedXml(parsedXml.getContent(),parsedXml);
+  public CustomPage<ParsedDetails> getUploadedModels(int pageSize, int pageNumber, String fileName, String newspaperName, SortOrder sortOrder,
+      SortColumn sortColumn) {
+    PageRequest pageRequest = PageRequest.of(pageNumber, pageSize,
+        SortOrder.ASC == sortOrder ? Sort.by(sortColumn.getColumn()).ascending() : Sort.by(sortColumn.getColumn()).descending());
+    SearchParams searchParams = new SearchParams();
+    searchParams.setFileName(fileName);
+    searchParams.setNewspaperName(newspaperName);
+    Page<ParsedDetails> parsedXml = xmlParseRepository.findParsedXml(searchParams, pageRequest);
+    return getPaginatedParsedXml(parsedXml.getContent(), parsedXml);
 
-    }
+  }
 
-  CustomPage<ParsedDetails> getPaginatedParsedXml(List<ParsedDetails> parsedDetailsList, Page<ParsedDetails> parsedDetails){
+  CustomPage<ParsedDetails> getPaginatedParsedXml(List<ParsedDetails> parsedDetailsList, Page<ParsedDetails> parsedDetails) {
     return CustomPage.<ParsedDetails>builder()
         .content(parsedDetailsList)
         .pageNumber(parsedDetails.getNumber())
